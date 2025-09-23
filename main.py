@@ -40,7 +40,6 @@ PY_LIBRARIES = [
     'scipy','sklearn','seaborn','sns','requests','flask','django','pytest','beautifulsoup4','bs4','lxml','PIL','tqdm',
     'pyplot','torch','tensorflow','keras'
 ]
-ALL_WORDS = set(PY_KEYWORDS + PY_BUILTINS + PY_LIBRARIES)
 PY_ALIAS = {
     "dfe":"def", "pritn":"print", "prnit":"print", "improt":"import", "printf":"print",
     "flase":"False", "treu":"True", "nnoe":"None", "clas":"class", "funtion":"function", "contiune":"continue",
@@ -49,6 +48,26 @@ PY_ALIAS = {
     "np":"numpy", "nmpy":"numpy", "pd":"pandas", "plt":"matplotlib", "sns":"seaborn", "sp":"scipy", "sk":"sklearn",
     "req":"requests", "bs":"bs4", "tf":"tensorflow", "ss":"sys","is":"os","ps":"os"
 }
+
+JAVA_KEYWORDS = [
+    'abstract','assert','boolean','break','byte','case','catch','char','class','const','continue',
+    'default','do','double','else','enum','extends','final','finally','float','for','goto','if','implements','import',
+    'instanceof','int','interface','long','native','new','package','private','protected','public','return','short',
+    'static','strictfp','super','switch','synchronized','this','throw','throws','transient','try','void','volatile','while',
+    'true','false','null','System','out','println','String','args','main','public','static','void',
+]
+JAVA_BUILTINS = [
+    'System','out','println','print','equals','length','charAt','substring','indexOf','HashMap','ArrayList','Map','List','Set',
+    'Iterator','Collections','Math','abs','min','max','random'
+]
+JAVA_LIBRARIES = [
+    'java.util','java.io','java.lang','java.math','java.net','java.awt','Scanner','Random','Arrays','Collections'
+]
+JAVA_ALIAS = {
+    "psvm":"public static void main", "prnit":"print", "pritn":"print",
+    "statc":"static", "pubic":"public", "viod":"void", "syso":"System.out.println", "clss":"class"
+}
+
 PAIRS = {'(': ')', '[': ']', '{': '}', '"': '"', "'": "'"}
 
 def autocorrect_func_names(line, keywords, alias):
@@ -79,19 +98,30 @@ HIGHLIGHT_MAP = {
     "reset": Style.RESET_ALL
 }
 
-def syntax_highlight(line):
+def syntax_highlight(line, mode, KEYWORDS, BUILTINS, LIBRARIES):
     def kw_color(w):
-        if w in ("def",): return HIGHLIGHT_MAP["def"]
-        if w in ("import",): return HIGHLIGHT_MAP["import"]
-        if w in ("from",): return HIGHLIGHT_MAP["from"]
-        if w in ("class",): return HIGHLIGHT_MAP["class"]
-        if w in PY_KEYWORDS: return HIGHLIGHT_MAP["keyword"]
-        if w in PY_BUILTINS: return HIGHLIGHT_MAP["builtin"]
-        if w in PY_LIBRARIES: return HIGHLIGHT_MAP["library"]
+        if mode == "python":
+            if w in ("def",): return HIGHLIGHT_MAP["def"]
+            if w in ("import",): return HIGHLIGHT_MAP["import"]
+            if w in ("from",): return HIGHLIGHT_MAP["from"]
+            if w in ("class",): return HIGHLIGHT_MAP["class"]
+        elif mode == "java":
+            if w == "class": return HIGHLIGHT_MAP["class"]
+            if w == "import": return HIGHLIGHT_MAP["import"]
+            if w == "package": return HIGHLIGHT_MAP["from"]
+            if w == "public": return HIGHLIGHT_MAP["keyword"]
+            if w == "static": return HIGHLIGHT_MAP["keyword"]
+            if w == "void": return HIGHLIGHT_MAP["keyword"]
+        if w in KEYWORDS: return HIGHLIGHT_MAP["keyword"]
+        if w in BUILTINS: return HIGHLIGHT_MAP["builtin"]
+        if w in LIBRARIES: return HIGHLIGHT_MAP["library"]
         return ""
     out, i, L = "", 0, len(line)
     while i < L:
         c = line[i]
+        if c == "//" and mode == "java" and i + 1 < L and line[i+1] == "/":
+            out += HIGHLIGHT_MAP["comment"] + line[i:] + HIGHLIGHT_MAP["reset"]
+            break
         if c == "#":
             out += HIGHLIGHT_MAP["comment"] + line[i:] + HIGHLIGHT_MAP["reset"]
             break
@@ -167,7 +197,7 @@ def getch():
         return unix_getch
 getkey = getch()
 
-def render(lines, cur, pos, winlen=24):
+def render(lines, cur, pos, winlen, mode, KEYWORDS, BUILTINS, LIBRARIES):
     n = len(lines)
     top = max(0, min(cur - winlen // 2, max(0, n - winlen)))
     bottom = min(top + winlen, n)
@@ -175,10 +205,10 @@ def render(lines, cur, pos, winlen=24):
     for i in range(top, bottom):
         l = lines[i]
         pfx = Fore.MAGENTA+">"+Style.RESET_ALL if i == cur else " "
-        colored = syntax_highlight(l)
+        colored = syntax_highlight(l, mode, KEYWORDS, BUILTINS, LIBRARIES)
         if i == cur:
-            before = syntax_highlight(l[:pos])
-            after = syntax_highlight(l[pos:])
+            before = syntax_highlight(l[:pos], mode, KEYWORDS, BUILTINS, LIBRARIES)
+            after = syntax_highlight(l[pos:], mode, KEYWORDS, BUILTINS, LIBRARIES)
             sys.stdout.write(f"{pfx}{str(i+1).rjust(4)} {before}|{after}\n")
         else:
             sys.stdout.write(f"{pfx}{str(i+1).rjust(4)} {colored}\n")
@@ -191,14 +221,45 @@ def current_word(buf, pos):
     while end < len(buf) and (buf[end].isalnum() or buf[end] == '_'): end += 1
     return start, end, buf[start:end]
 
-def triggers_colon(line):
-    # Accepts def hello(), class X, if a==b, else, for a in b, etc. missing colon
-    s = line.strip()
-    triggers = ['def ', 'class ', 'if ', 'elif ', 'else', 'for ', 'while', 'try', 'except', 'finally', 'with ']
-    return any(s.startswith(t) for t in triggers) and not s.endswith(':')
+def triggers_java_block(line):
+    # patterns that need { (if missing)
+    line_strip = line.strip()
+    patterns = [
+        r"^(?:public |protected |private )?class\s+\w+(?:\s+extends\s+\w+)?(?:\s+implements\s+[\w, ]+)?$",
+        r"^(public |protected |private )?void\s+\w+\s*\(.*\)$",
+        r"^(public |protected |private )?\w+\s+\w+\s*\(.*\)$",
+        r"^\s*if\s*\(.*\)$",
+        r"^\s*for\s*\(.*\)$",
+        r"^\s*while\s*\(.*\)$",
+        r"^\s*else(\s+if\s*\(.*\))?$",
+        r"^\s*do\s*$",
+        r"^\s*switch\s*\(.*\)$",
+        r"^\s*try\s*$",
+        r"^\s*catch\s*\(.*\)$",
+        r"^\s*finally\s*$"
+    ]
+    for pat in patterns:
+        if re.fullmatch(pat, line_strip):
+            return True
+    return False
 
-def line_indent(line):
-    return len(line) - len(line.lstrip(' '))
+def triggers_java_case_colon(line):
+    # check for 'case ...' or 'default' with no colon
+    line_strip = line.strip()
+    return ((line_strip.startswith("case ") or line_strip.startswith("default")) and not line_strip.endswith(":"))
+
+def needs_java_semi(line):
+    # Detects if a line needs ; (not ending in ;, {, }, :)
+    s = line.strip()
+    if len(s) == 0:
+        return False
+    if s.endswith(';') or s.endswith('{') or s.endswith('}') or s.endswith(':'):
+        return False
+    # Not for block headers
+    if triggers_java_block(s) or triggers_java_case_colon(s):
+        return False
+    # Not for labels, method signatures, class signatures
+    return True
 
 def prompt_action():
     print(
@@ -211,6 +272,17 @@ def prompt_action():
         act = input().strip()
         if act in ('1', '2'): return act
 
+def prompt_lang_type():
+    print(
+        Fore.YELLOW + Style.BRIGHT + "Choose file type:" + Style.RESET_ALL + "\n" +
+        Fore.YELLOW + "  1" + Style.RESET_ALL + Fore.CYAN + " - Python" + Style.RESET_ALL + "\n" +
+        Fore.YELLOW + "  2" + Style.RESET_ALL + Fore.CYAN + " - Java" + Style.RESET_ALL
+    )
+    while True:
+        print(Fore.YELLOW + "Enter 1 or 2: " + Style.RESET_ALL, end="")
+        typ = input().strip()
+        if typ in ('1','2'): return "python" if typ=='1' else "java"
+
 def choose_save_folder():
     return os.getcwd()
 
@@ -218,17 +290,38 @@ def insert_pair(char, buf, pos):
     close = PAIRS[char]
     return buf[:pos] + char + close + buf[pos:], pos + 1
 
+def line_indent(line):
+    return len(line) - len(line.lstrip(' '))
+
 def main():
     clear_screen()
     print_title_half_color("AutoSyntaxPy", AUTHOR_NAME)
     act = prompt_action()
     print(Fore.LIGHTWHITE_EX+"Enter file name: "+Style.RESET_ALL, end="")
     filename = input().strip()
-    if not filename.endswith('.py'):
-        print(Fore.RED+"Only .py files supported."+Style.RESET_ALL); return
+    langmode = prompt_lang_type()
+
+    if langmode == "python":
+        KEYWORDS, BUILTINS, LIBRARIES, ALIAS = (
+            set(PY_KEYWORDS), set(PY_BUILTINS), set(PY_LIBRARIES), PY_ALIAS,
+        )
+        END_BLOCK = ':'
+        BLOCK_INDENT = 4
+        EXT_REQUIRED = '.py'
+    else:
+        KEYWORDS, BUILTINS, LIBRARIES, ALIAS = (
+            set(JAVA_KEYWORDS), set(JAVA_BUILTINS), set(JAVA_LIBRARIES), JAVA_ALIAS,
+        )
+        END_BLOCK = '{'
+        BLOCK_INDENT = 4
+        EXT_REQUIRED = '.java'
+
+    if not filename.endswith(EXT_REQUIRED):
+        filename += EXT_REQUIRED
     folder = choose_save_folder()
     clear_screen()
     fullpath = os.path.join(folder, filename)
+
     if act == "2":
         try:
             with open(fullpath, encoding="utf-8") as f:
@@ -243,7 +336,7 @@ def main():
 
     try:
         while True:
-            render(lines, cur, pos)
+            render(lines, cur, pos, 24, langmode, KEYWORDS, BUILTINS, LIBRARIES)
             ch = getkey()
             buf = lines[cur]
             if ch == 'ctrl+s':
@@ -278,38 +371,68 @@ def main():
             elif ch == ' ':
                 s, e, w = current_word(buf, pos)
                 if w:
-                    fixed = autocorrect_word(w, ALL_WORDS, PY_ALIAS)
+                    fixed = autocorrect_word(w, KEYWORDS | BUILTINS | LIBRARIES, ALIAS)
                     lines[cur] = buf[:s] + fixed + buf[e:]
                     pos = s + len(fixed)
                     buf = lines[cur]
-                lines[cur] = autocorrect_func_names(lines[cur], ALL_WORDS, PY_ALIAS)
+                lines[cur] = autocorrect_func_names(lines[cur], KEYWORDS | BUILTINS | LIBRARIES, ALIAS)
                 buf = lines[cur]
                 lines[cur] = buf[:pos] + ' ' + buf[pos:]
                 pos += 1
             elif ch == '\n':
                 s, e, w = current_word(buf, pos)
                 if w:
-                    fixed = autocorrect_word(w, ALL_WORDS, PY_ALIAS)
+                    fixed = autocorrect_word(w, KEYWORDS | BUILTINS | LIBRARIES, ALIAS)
                     lines[cur] = buf[:s] + fixed + buf[e:]
                     pos = s + len(fixed)
                     buf = lines[cur]
-                lines[cur] = autocorrect_func_names(lines[cur], ALL_WORDS, PY_ALIAS)
+                lines[cur] = autocorrect_func_names(lines[cur], KEYWORDS | BUILTINS | LIBRARIES, ALIAS)
                 buf = lines[cur]
                 left = buf[:pos]
                 right = buf[pos:]
-
                 prev_strip = left.rstrip()
                 prev_indent = line_indent(left)
-
-                # If block keyword but missing colon, insert colon and indent
-                if triggers_colon(prev_strip):
-                    left = left.rstrip() + ':'
-                    newindent = prev_indent + 4
-                # If already ends with a colon, just indent
-                elif prev_strip.endswith(':'):
-                    newindent = prev_indent + 4
-                else:
+                if langmode == "python":
+                    triggers = ['def ', 'class ', 'if ', 'elif ', 'else', 'for ', 'while', 'try', 'except', 'finally', 'with ']
+                    if any(prev_strip.startswith(t) for t in triggers) and not prev_strip.endswith(':'):
+                        left = left.rstrip() + ':'
+                        newindent = prev_indent + BLOCK_INDENT
+                    elif prev_strip.endswith(':'):
+                        newindent = prev_indent + BLOCK_INDENT
+                    else:
+                        newindent = prev_indent
+                else:  # Java
+                    new_left = left
                     newindent = prev_indent
+                    # Add missing block opener
+                    if triggers_java_block(prev_strip):
+                        if not prev_strip.endswith('{'):
+                            new_left = left.rstrip() + ' {'
+                        newindent = prev_indent + BLOCK_INDENT
+                    # Add missing : for case/default
+                    elif triggers_java_case_colon(prev_strip):
+                        new_left = left.rstrip() + ':'
+                        newindent = prev_indent + BLOCK_INDENT
+                    # Add missing semicolon to terminating lines
+                    elif needs_java_semi(prev_strip):
+                        new_left = left.rstrip() + ';'
+                        newindent = prev_indent
+                    # If user entered only "}", outdent
+                    elif prev_strip == "}":
+                        # Find previous nonempty indent
+                        prev_block = prev_indent
+                        for j in range(cur-1, -1, -1):
+                            prior = lines[j].rstrip()
+                            if prior.endswith("{"):
+                                prev_block = line_indent(lines[j])
+                                break
+                        newindent = max(0, prev_block)
+                    # If ends with {, indent
+                    elif prev_strip.endswith("{"):
+                        newindent = prev_indent + BLOCK_INDENT
+                    else:
+                        newindent = prev_indent
+                    left = new_left
 
                 lines[cur] = left
                 lines.insert(cur+1, ' ' * newindent + right.lstrip())
